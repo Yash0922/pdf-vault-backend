@@ -33,12 +33,25 @@ mongoose.connect(process.env.MONGODB_URI, {
     });
     process.exit(1);
   });
-
+  const corsOptions = {
+    origin: process.env.NODE_ENV === 'production' 
+      ? [
+          'https://pdf-downloader-10yxj9ur0-yash0922s-projects.vercel.app/', // Replace with your Vercel domain
+          'https://pdf-downloader-10yxj9ur0-yash0922s-projects.vercel.app/',          // Replace with any custom domain
+          /\.vercel\.app$/                           // Allow all Vercel subdomains for preview deployments
+        ] 
+      : 'http://localhost:5173', // Vite's default development port
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  };
+  
+  app.use(cors(corsOptions));
 // Middleware
 app.use(helmet()); // Security headers
 app.use(compression()); // Compress responses
 app.use(morgan('dev')); // Request logging
-app.use(cors()); // Enable CORS
+// app.use(cors()); // Enable CORS
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 
