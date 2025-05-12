@@ -18,6 +18,7 @@ const downloadSchema = new mongoose.Schema({
   ipAddress: {
     type: String
   },
+  
   userAgent: {
     type: String
   }
