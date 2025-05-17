@@ -36,9 +36,9 @@ const pdfSchema = new mongoose.Schema({
   },
   isFree: {
     type: Boolean,
-    default: false
+    default: true
   },
-   isPaid: {
+  isPaid: {
     type: Boolean,
     default: false
   },
@@ -55,6 +55,24 @@ const pdfSchema = new mongoose.Schema({
     type: [String],
     default: []
   }
+});
+
+// Add a pre-save hook to automatically set isPaid based on isFree
+pdfSchema.pre('save', function(next) {
+  // If price > 0, it's not free
+  if (this.price > 0) {
+    this.isFree = false;
+    this.isPaid = true;
+  }
+  
+  // If isFree is explicitly set to false, it's paid
+  if (this.isFree === false) {
+    this.isPaid = true;
+  } else {
+    this.isPaid = false;
+  }
+  
+  next();
 });
 
 module.exports = mongoose.model('Pdf', pdfSchema);

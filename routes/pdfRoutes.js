@@ -6,44 +6,91 @@ const path = require('path');
 const fs = require('fs');
 const { authCheck } = require('../middleware/auth');
 const Pdf = require('../models/Pdf');
-const User = require('../models/User'); // Add this import for User model
+const User = require('../models/User');
 const Download = require('../models/Download');
 const cashfreeService = require('../services/cashfree');
 
-// Configure multer for PDF uploads
+// Ensure upload directories exist
+const ensureDirectoriesExist = () => {
+  const directories = [
+    path.join(process.cwd(), 'uploads'),
+    path.join(process.cwd(), 'uploads/pdfs'),
+    path.join(process.cwd(), 'uploads/thumbnails')
+  ];
+  
+  directories.forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      console.log(`Created directory: ${dir}`);
+    }
+  });
+};
+
+// Create directories on server startup
+ensureDirectoriesExist();
+
+// Configure multer for PDF uploads with improved error handling
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/pdfs');
-    
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    
+    // Use absolute path from project root
+    const uploadDir = path.join(process.cwd(), 'uploads/pdfs');
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    // Generate unique filename
+    // Generate unique filename with original name to maintain extension
+    const originalExt = path.extname(file.originalname);
+    const nameWithoutExt = path.basename(file.originalname, originalExt);
+    const sanitizedName = nameWithoutExt.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    
+    cb(null, `${sanitizedName}-${uniqueSuffix}${originalExt}`);
   }
 });
 
-// PDF file filter
+// PDF file filter with improved error handling
 const pdfFilter = (req, file, cb) => {
-  if (file.mimetype === 'application/pdf') {
+  // Check for PDF MIME type or extension
+  const allowedMimeTypes = ['application/pdf'];
+  const allowedExtensions = ['.pdf'];
+  const fileExt = path.extname(file.originalname).toLowerCase();
+  
+  if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(fileExt)) {
     cb(null, true);
   } else {
-    cb(new Error('Only PDF files are allowed'), false);
+    cb(new Error('Only PDF files are allowed. Please upload a PDF file.'), false);
   }
 };
 
-const upload = multer({ 
+// Create multer upload instance with better error handling
+const upload = multer({
   storage: storage,
   fileFilter: pdfFilter,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { 
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
 });
+
+// Multer error handling middleware
+const handleMulterErrors = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: 'File is too large. Maximum size is 10MB.'
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: `Upload error: ${err.message}`
+    });
+  } else if (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message
+    });
+  }
+  next();
+};
 
 // Get all PDFs
 router.get('/', authCheck, async (req, res) => {
@@ -95,7 +142,7 @@ router.get('/:id', authCheck, async (req, res) => {
 });
 
 // Upload a new PDF
-router.post('/', authCheck, upload.single('pdfFile'), async (req, res) => {
+router.post('/', authCheck, upload.single('pdfFile'), handleMulterErrors, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -108,7 +155,19 @@ router.post('/', authCheck, upload.single('pdfFile'), async (req, res) => {
     
     // Get file size in MB
     const fileSize = req.file.size / (1024 * 1024);
-    const size = fileSize.toFixed(1) + ' MB';
+    const size = fileSize.toFixed(2) + ' MB';
+    
+    // Get the proper path, using the path relative to the server root
+    const relativePath = path.join('pdfs', req.file.filename);
+    
+    // Log file information
+    console.log('File uploaded:', {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      path: req.file.path,
+      relativePath: relativePath,
+      size: size
+    });
     
     // Create new PDF document
     const newPdf = new Pdf({
@@ -116,9 +175,10 @@ router.post('/', authCheck, upload.single('pdfFile'), async (req, res) => {
       description,
       size,
       fileSize: req.file.size,
-      path: `pdfs/${req.file.filename}`,
+      path: relativePath,
       price: price || 0,
       isFree: isFree === 'true',
+      isPaid: isFree !== 'true', // Set isPaid based on isFree value
       tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
       createdBy: req.dbUser._id
     });
@@ -132,6 +192,13 @@ router.post('/', authCheck, upload.single('pdfFile'), async (req, res) => {
     });
   } catch (error) {
     console.error('Error uploading PDF:', error);
+    
+    // If there was an error, try to delete the uploaded file
+    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+      console.log(`Deleted file due to error: ${req.file.path}`);
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Server error',
@@ -140,7 +207,7 @@ router.post('/', authCheck, upload.single('pdfFile'), async (req, res) => {
   }
 });
 
-// Download a PDF
+// Download a PDF with improved path handling
 router.get('/download/:id', authCheck, async (req, res) => {
   try {
     const pdfId = req.params.id;
@@ -188,9 +255,12 @@ router.get('/download/:id', authCheck, async (req, res) => {
     pdf.downloadCount = (pdf.downloadCount || 0) + 1;
     await pdf.save();
     
-    // Send the file
-    const filePath = path.join(__dirname, '../uploads', pdf.path);
-    console.log('Sending file from path:', filePath);
+    // Construct the absolute file path from the application root
+    const rootPath = process.cwd();
+    const uploadDir = path.join(rootPath, 'uploads');
+    const filePath = path.join(uploadDir, pdf.path);
+    
+    console.log('Constructed file path:', filePath);
     
     // Check if file exists
     if (!fs.existsSync(filePath)) {
@@ -200,10 +270,8 @@ router.get('/download/:id', authCheck, async (req, res) => {
       const fileName = path.basename(pdf.path);
       const possiblePaths = [
         filePath,
-        path.join(__dirname, '../uploads/pdfs', fileName),
-        path.join(__dirname, '../../uploads/pdfs', fileName),
-        path.join(process.cwd(), 'uploads/pdfs', fileName),
-        path.join(process.cwd(), 'uploads', pdf.path)
+        path.join(rootPath, 'uploads/pdfs', fileName),
+        path.join(rootPath, 'uploads', pdf.path)
       ];
       
       let foundPath = null;
@@ -225,10 +293,10 @@ router.get('/download/:id', authCheck, async (req, res) => {
       }
       
       // Send the file from the found path
-      return res.download(foundPath, pdf.title + '.pdf');
+      return res.download(foundPath, `${pdf.title}.pdf`);
     }
     
-    res.download(filePath, pdf.title + '.pdf');
+    res.download(filePath, `${pdf.title}.pdf`);
   } catch (error) {
     console.error('Error downloading PDF:', error);
     res.status(500).json({
@@ -259,10 +327,15 @@ router.delete('/:id', authCheck, async (req, res) => {
       });
     }
     
-    // Delete the file from storage
-    const filePath = path.join(__dirname, '../uploads', pdf.path);
+    // Delete the file from storage with improved path handling
+    const rootPath = process.cwd();
+    const filePath = path.join(rootPath, 'uploads', pdf.path);
+    
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
+      console.log(`File deleted: ${filePath}`);
+    } else {
+      console.log(`File not found for deletion: ${filePath}`);
     }
     
     // Delete the PDF from the database
@@ -306,7 +379,6 @@ router.get('/payment-session/:id', authCheck, async (req, res) => {
     });
     
     // Check if PDF is paid
-    // FIXED: Check for isFree being false, not isPaid being true
     if (pdf.isFree) {
       return res.status(400).json({
         success: false,

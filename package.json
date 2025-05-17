@@ -4,7 +4,7 @@
   "description": "Backend for PDF Vault application",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "PORT=5001 nodemon server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
